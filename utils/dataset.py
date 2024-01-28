@@ -1,7 +1,7 @@
 import os
 import json
 
-from PIL import Image, ImageOps
+from PIL import Image
 import numpy as np
 import torch
 from torch.utils.data import Dataset
@@ -53,6 +53,7 @@ class BlenderDataset(Dataset):
             self.poses = []
             self.all_rays = []
             self.all_rgbs = []
+            self.all_times = []
             for frame in self.meta['frames']:
                 pose = np.array(frame['transform_matrix'])[:3, :4]
                 self.poses += [pose]
@@ -73,9 +74,15 @@ class BlenderDataset(Dataset):
                                              self.near*torch.ones_like(rays_o[:, :1]),
                                              self.far*torch.ones_like(rays_o[:, :1])],
                                              1)] # (h*w, 8)
+                
+                self.all_times.append(frame['time'])
 
             self.all_rays = torch.cat(self.all_rays, 0) # (len(self.meta['frames])*h*w, 8)
             self.all_rgbs = torch.cat(self.all_rgbs, 0) # (len(self.meta['frames])*h*w, 3)
+            
+            self.all_times = torch.repeat_interleave(torch.tensor(self.all_times), w*h, 0)
+            assert self.all_times.shape == torch.Size([len(self.meta['frames'])*h*w])
+            
 
     def __len__(self):
         if self.split == 'train':
@@ -87,7 +94,8 @@ class BlenderDataset(Dataset):
     def __getitem__(self, idx):
         if self.split == 'train': # use data in the buffers
             sample = {'rays': self.all_rays[idx],
-                      'rgbs': self.all_rgbs[idx]}
+                      'rgbs': self.all_rgbs[idx],
+                      'times': self.all_times[idx]}
 
         else: # create data for each image separately
             frame = self.meta['frames'][idx]
@@ -98,11 +106,6 @@ class BlenderDataset(Dataset):
             img = self.transform(img) # (4, H, W)
             img = img.view(4, -1).permute(1, 0) # (H*W, 4) RGBA
             img = img[:, :3]*img[:, -1:] + (1-img[:, -1:]) # blend A to RGB
-            
-            depth = Image.open(os.path.join(self.root_dir, f"{frame['file_path']}_depth_0001.png"))
-            depth = ImageOps.grayscale(depth)
-            depth = self.transform(depth).squeeze()
-            assert depth.shape == torch.Size(self.img_wh)
 
             rays_o, rays_d = get_p2w_ray_directions(self.directions, c2w)
 
@@ -113,6 +116,6 @@ class BlenderDataset(Dataset):
 
             sample = {'rays': rays,
                       'rgbs': img,
-                      'depths': depth}
+                      'time': frame['time']}
 
         return sample
